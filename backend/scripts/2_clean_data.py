@@ -77,14 +77,14 @@ class DatasetCleaner:
         
         return text
     
-    # ========== BƯỚC 4: CHUYỂN CHỮ THƯỜNG ==========
-    def normalize_case(self, text):
+    ''' ========== BƯỚC 4: CHUYỂN CHỮ THƯỜNG ==========
+    #def normalize_case(self, text):
         """
         Chuyển về chữ thường
         Ca dao/tục ngữ thường không có tên riêng nên an toàn
         """
         return text.lower()
-    
+    '''
     # ========== BƯỚC 5: KIỂM TRA HỢP LỆ ==========
     def is_valid_proverb(self, text):
         """
@@ -181,7 +181,7 @@ class DatasetCleaner:
             line = self.clean_text(line)
             
             # 4. Chuyển chữ thường
-            line = self.normalize_case(line)
+            #line = self.normalize_case(line)
             
             # 5. Kiểm tra hợp lệ
             is_valid, reason = self.is_valid_proverb(line)
@@ -308,7 +308,7 @@ class DatasetCleaner:
 if __name__ == "__main__":
     # Đường dẫn
     BASE_DIR = Path(__file__).parent.parent
-    INPUT_FILE = BASE_DIR / "data" / "raw" / "dataset.txt"
+    INPUT_FILE = BASE_DIR / "data" / "raw" / "rawdata.txt"
     OUTPUT_FILE = BASE_DIR / "data" / "processed" / "cleaned_dataset.txt"
     
     # Tham số làm sạch

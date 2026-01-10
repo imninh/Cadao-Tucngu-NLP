@@ -19,7 +19,7 @@ def analyze_dataset(file_path):
     except FileNotFoundError:
         print(f" Không tìm thấy file: {file_path}")
         print(f" Đường dẫn hiện tại: {Path.cwd()}")
-        print(f" Hãy đảm bảo file dataset nằm ở: backend/data/raw/cadao_raw.txt")
+        print(f" Hãy đảm bảo file dataset nằm ở: backend/data/raw/rawdata.txt")
         return False
     except Exception as e:
         print(f"❌ Lỗi đọc file: {e}")
@@ -193,7 +193,7 @@ def analyze_dataset(file_path):
 # ========== MAIN ==========
 if __name__ == "__main__":
     # Đường dẫn tương đối từ backend/scripts/
-    RAW_DATA_PATH = Path(__file__).parent.parent / "data" / "raw" / "dataset.txt"
+    RAW_DATA_PATH = Path(__file__).parent.parent / "data" / "raw" / "rawdata.txt"
     
     print("\n🚀 BẮT ĐẦU PHÂN TÍCH DATASET")
     print(f"📍 Đường dẫn: {RAW_DATA_PATH}")
@@ -205,5 +205,5 @@ if __name__ == "__main__":
         print("   1. Kiểm tra file dataset có tồn tại không:")
         print("      ls backend/data/raw/")
         print("   2. Nếu chưa có, di chuyển file vào đúng chỗ:")
-        print("      mv path/to/your/file.txt backend/data/raw/cadao_raw.txt")
+        print("      mv path/to/your/file.txt backend/data/raw/rawdata.txt")
         sys.exit(1)
