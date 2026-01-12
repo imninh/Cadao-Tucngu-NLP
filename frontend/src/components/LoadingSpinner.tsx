@@ -9,7 +9,7 @@ interface LoadingSpinnerProps {
 }
 
 const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
-  message = 'Processing with N-gram Model',
+  message = 'Processing with Retrieval Model',
   subMessage = 'Analyzing text patterns...',
   size = 'medium',
   fullPage = false
