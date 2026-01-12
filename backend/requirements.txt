@@ -4,3 +4,4 @@ scikit-learn
 underthesea
 flask
 flask-cors
+torch
