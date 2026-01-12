@@ -1,294 +1,440 @@
+"""
+FIXED API.PY - Compatible with Improved Retrieval Model
+Works with both old and new model formats
+"""
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from collections import defaultdict, Counter
 import pickle
 import os
 import sys
-import importlib.util
+import torch
 
 app = Flask(__name__)
 CORS(app)
 
-# Import NgramModel - Đường dẫn ĐÚNG
-NgramModel = None
+print("="*60)
+print("🚀 CADAO AUTOCOMPLETE API - LOADING")
+print("="*60)
+
+# Get directories
+current_dir = os.path.dirname(os.path.abspath(__file__))
+models_dir = os.path.join(current_dir, "models")
+trained_models_dir = os.path.join(current_dir, "trained_models")
+
+print(f"📁 Current dir: {current_dir}")
+print(f"📁 Models dir: {models_dir}")
+print(f"📁 Trained models dir: {trained_models_dir}")
+
+# Add models to path
+if models_dir not in sys.path:
+    sys.path.insert(0, models_dir)
+
+# ============================================================
+# LOAD RETRIEVAL MODEL
+# ============================================================
+
+retrieval_model = None
+
 try:
-    # Lấy thư mục hiện tại (backend/)
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    ngram_path = os.path.join(current_dir, "models", "ngram.py")
+    print(f"\n📚 Loading Retrieval Model...")
     
-    print(f"🔍 Looking for ngram.py at: {ngram_path}")
-    print(f"🔍 File exists: {os.path.exists(ngram_path)}")
+    # Import RetrievalModel class
+    from retrieval import RetrievalModel
     
-    if os.path.exists(ngram_path):
-        # Load module từ file path
-        spec = importlib.util.spec_from_file_location("ngram", ngram_path)
-        ngram_module = importlib.util.module_from_spec(spec)
-        sys.modules["ngram"] = ngram_module
-        spec.loader.exec_module(ngram_module)
+    # Try different model files
+    model_files = [
+        "improved_retrieval_model.pkl",  # New BM25 model
+        "retrieval_model.pkl"             # Old TF-IDF model
+    ]
+    
+    for model_file in model_files:
+        model_path = os.path.join(trained_models_dir, model_file)
         
-        # Lấy class NgramModel
-        NgramModel = ngram_module.NgramModel
-        print("✅ Imported NgramModel class successfully")
-    else:
-        print("❌ ngram.py file not found")
+        if os.path.exists(model_path):
+            print(f"   Found: {model_file}")
+            
+            try:
+                # Create model instance
+                retrieval_model = RetrievalModel()
+                
+                # Try loading
+                retrieval_model.load(model_path)
+                
+                print(f"✅ Retrieval model loaded!")
+                print(f"   Type: {model_file}")
+                print(f"   Database: {len(retrieval_model.database)} sentences")
+                
+                # Check if model is properly trained
+                if hasattr(retrieval_model, 'is_trained') and retrieval_model.is_trained:
+                    print(f"   Status: ✅ Trained")
+                elif hasattr(retrieval_model, 'vectors') and retrieval_model.vectors is not None:
+                    # Old model format
+                    print(f"   Status: ✅ Legacy format")
+                    retrieval_model.is_trained = True
+                else:
+                    print(f"   Status: ⚠️  May not be trained properly")
+                
+                break
+                
+            except KeyError as e:
+                print(f"   ⚠️  Missing key: {e}")
+                print(f"   This is an old/incompatible model format")
+                
+                # Try manual reconstruction for old format
+                try:
+                    print(f"   Attempting manual load...")
+                    
+                    with open(model_path, 'rb') as f:
+                        data = pickle.load(f)
+                    
+                    retrieval_model = RetrievalModel()
+                    retrieval_model.vectorizer = data['vectorizer']
+                    retrieval_model.database = data['database']
+                    
+                    # Old format might have 'vectors' instead of 'term_freqs'
+                    if 'vectors' in data:
+                        retrieval_model.vectors = data['vectors']
+                        retrieval_model.is_trained = True
+                        
+                        print(f"✅ Loaded legacy model!")
+                        print(f"   Database: {len(retrieval_model.database)} sentences")
+                        break
+                    else:
+                        print(f"   ❌ Cannot reconstruct - missing data")
+                        
+                except Exception as e2:
+                    print(f"   ❌ Manual load failed: {e2}")
+                    continue
+                    
+            except Exception as e:
+                print(f"   ❌ Load failed: {e}")
+                continue
+    
+    if retrieval_model is None:
+        print(f"\n⚠️  No valid retrieval model found!")
+        print(f"\n💡 Please train the model:")
+        print(f"   cd backend/models")
+        print(f"   python retrieval.py")
         
 except Exception as e:
-    print(f"❌ Cannot import NgramModel: {e}")
+    print(f"❌ Error loading Retrieval: {e}")
     import traceback
     traceback.print_exc()
 
-print("=" * 60)
-print("🚀 LOADING N-GRAM MODEL API")
-print("=" * 60)
+# ============================================================
+# LOAD LSTM MODEL (Optional)
+# ============================================================
 
-# ✅ FIX: Đường dẫn model ĐÚNG (trong backend/)
-current_dir = os.path.dirname(os.path.abspath(__file__))
+lstm_predictor = None
 
-MODEL_PATHS = [
-    os.path.join(current_dir, "trained_models", "improved_ngram_model.pkl"),
-    os.path.join(current_dir, "trained_models", "ngram_model.pkl")
-]
-
-ngram_model = None
-model_path_used = None
-
-# Thử load từ các đường dẫn
-for model_path in MODEL_PATHS:
-    print(f"🔍 Checking: {model_path}")
-    print(f"   Exists: {os.path.exists(model_path)}")
+try:
+    print(f"\n🧠 Loading LSTM Model...")
     
-    if os.path.exists(model_path):
+    lstm_path = os.path.join(trained_models_dir, "lstm_cadao.pt")
+    
+    if os.path.exists(lstm_path):
+        print(f"   Found: lstm_cadao.pt")
+        
+        # Try importing LSTM classes
         try:
-            print(f"📦 Loading model from: {model_path}")
+            from lstm_cadao import LSTMCaDao, LSTMPredictor # type: ignore
             
-            with open(model_path, "rb") as f:
-                model_data = pickle.load(f)
+            # Load checkpoint
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             
-            print(f"📊 Loaded data type: {type(model_data)}")
+            checkpoint = torch.load(lstm_path, map_location=device)
+            vocab = checkpoint['vocab']
             
-            # Nếu là dict (đã save từ NgramModel.save())
-            if isinstance(model_data, dict):
-                print("🔄 Reconstructing NgramModel from saved data...")
+            # Create model
+            model = LSTMCaDao(
+                vocab_size=vocab.n_words,
+                embed_dim=128,
+                hidden_dim=256,
+                num_layers=2
+            )
+            
+            model.load_state_dict(checkpoint['model_state_dict'])
+            
+            # Create predictor
+            lstm_predictor = LSTMPredictor(model, vocab, device)
+            
+            print(f"✅ LSTM model loaded!")
+            print(f"   Vocab: {vocab.n_words} words")
+            print(f"   Device: {device}")
+            
+        except ImportError:
+            print(f"   ⚠️  lstm_cadao.py not found")
+            print(f"   LSTM model available but cannot load")
+    else:
+        print(f"   ℹ️  LSTM model not found (optional)")
+        
+except Exception as e:
+    print(f"⚠️  LSTM not available: {e}")
+
+# ============================================================
+# CREATE ENSEMBLE
+# ============================================================
+
+ensemble_model = None
+
+if retrieval_model and lstm_predictor:
+    print(f"\n🎯 Creating Ensemble...")
+    
+    try:
+        class SimpleEnsemble:
+            """Simple ensemble: Retrieval + LSTM"""
+            
+            def __init__(self, retrieval, lstm):
+                self.retrieval = retrieval
+                self.lstm = lstm
+            
+            def predict_multiple(self, input_text, top_k=5):
+                """Ensemble prediction"""
+                from collections import defaultdict
                 
-                # KIỂM TRA NgramModel có tồn tại không
-                if NgramModel is None:
-                    print("❌ Cannot reconstruct - NgramModel class not imported")
-                    continue
+                # Get predictions
+                ret_cands = []
+                lstm_cands = []
                 
-                # Tạo instance mới
-                ngram_model = NgramModel(
-                    n=model_data.get('n', 4),
-                    alpha=model_data.get('alpha', 0.1)
+                try:
+                    ret_cands = self.retrieval.predict_multiple(input_text, top_k=top_k)
+                except Exception as e:
+                    print(f"   ⚠️  Retrieval error: {e}")
+                
+                try:
+                    lstm_cands = self.lstm.predict_multiple(input_text, top_k=top_k)
+                except Exception as e:
+                    print(f"   ⚠️  LSTM error: {e}")
+                
+                # Combine scores (50/50 weight)
+                scores = defaultdict(lambda: {'score': 0, 'sources': []})
+                
+                for i, cand in enumerate(ret_cands):
+                    text = cand['text']
+                    conf = cand.get('confidence', 0.5)
+                    rank_bonus = 0.1 * (1 - i / max(len(ret_cands), 1))
+                    
+                    scores[text]['score'] += (conf + rank_bonus) * 0.5
+                    scores[text]['sources'].append('retrieval')
+                
+                for i, cand in enumerate(lstm_cands):
+                    text = cand['text']
+                    conf = cand.get('confidence', 0.5)
+                    rank_bonus = 0.1 * (1 - i / max(len(lstm_cands), 1))
+                    
+                    scores[text]['score'] += (conf + rank_bonus) * 0.5
+                    scores[text]['sources'].append('lstm')
+                
+                # Diversity bonus
+                for text, info in scores.items():
+                    if len(set(info['sources'])) > 1:
+                        scores[text]['score'] += 0.15
+                
+                # Sort
+                sorted_items = sorted(
+                    scores.items(),
+                    key=lambda x: x[1]['score'],
+                    reverse=True
                 )
                 
-                # Khôi phục dữ liệu
-                ngram_model.counts = {}
-                for k, v in model_data['counts'].items():
-                    ngram_model.counts[k] = defaultdict(Counter)
-                    for context, counter in v.items():
-                        ngram_model.counts[k][context] = Counter(counter)
+                # Format
+                results = []
+                for text, info in sorted_items[:top_k]:
+                    results.append({
+                        'text': text,
+                        'confidence': min(0.95, info['score']),
+                        'model': 'ensemble',
+                        'sources': list(set(info['sources']))
+                    })
                 
-                ngram_model.vocab = set(model_data['vocab'])
-                ngram_model.full_sentences = model_data.get('full_sentences', [])
-                ngram_model.total_ngrams = model_data.get('total_ngrams', 0)
-                
-                print("✅ Successfully reconstructed NgramModel")
-                
-            # Nếu đã là instance của NgramModel
-            elif NgramModel and isinstance(model_data, NgramModel):
-                print("✅ Loaded NgramModel instance directly")
-                ngram_model = model_data
-                
-            else:
-                print(f"⚠️ Unknown model type: {type(model_data)}")
-                ngram_model = model_data
-            
-            model_path_used = model_path
-            break
-            
-        except Exception as e:
-            print(f"❌ Error loading {model_path}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
+                return results
+        
+        ensemble_model = SimpleEnsemble(retrieval_model, lstm_predictor)
+        print(f"✅ Ensemble created!")
+        
+    except Exception as e:
+        print(f"⚠️  Ensemble creation failed: {e}")
 
-if ngram_model is None:
-    print("❌ No model could be loaded!")
+# ============================================================
+# DETERMINE ACTIVE MODEL
+# ============================================================
+
+active_model = None
+model_type = None
+
+if ensemble_model:
+    active_model = ensemble_model
+    model_type = "ensemble"
+    print(f"\n🎯 Active model: ENSEMBLE (Retrieval + LSTM)")
+elif retrieval_model:
+    active_model = retrieval_model
+    model_type = "retrieval"
+    print(f"\n📚 Active model: RETRIEVAL only")
 else:
-    print(f"✅ Model loaded successfully from: {model_path_used}")
-    print(f"📊 Model type: {type(ngram_model)}")
-    
-    # Kiểm tra methods
-    print("🔍 Checking available methods:")
-    methods = ['predict_multiple', 'predict', 'predict_next_word', 'get_matching_candidates']
-    for method in methods:
-        if hasattr(ngram_model, method):
-            print(f"   ✅ {method}() is available")
-        else:
-            print(f"   ❌ {method}() is NOT available")
+    print(f"\n❌ NO MODELS LOADED!")
+    print(f"\n💡 Please train at least the Retrieval model:")
+    print(f"   cd backend/models")
+    print(f"   python retrieval.py")
+
+print("="*60)
+
+# ============================================================
+# API ENDPOINTS
+# ============================================================
 
 @app.route("/api/predict", methods=["POST", "OPTIONS"])
 def predict():
-    """API endpoint cho N-gram model prediction"""
+    """Main prediction endpoint"""
     
     if request.method == "OPTIONS":
         return "", 200
     
     try:
+        # Parse request
         data = request.get_json()
         input_text = data.get("input", "").strip()
         
         if not input_text:
             return jsonify({
-                "model": "ngram",
+                "model": model_type,
                 "results": [],
                 "error": "Vui lòng nhập văn bản"
             }), 400
         
-        print(f"📥 Received request: '{input_text}'")
+        print(f"\n📥 Request: '{input_text}'")
         
-        if ngram_model is None:
+        # Check model loaded
+        if active_model is None:
             return jsonify({
-                "model": "ngram", 
+                "model": "none",
                 "results": [],
                 "error": "Model chưa được load"
             }), 500
         
+        # Get predictions
         results = []
         
-        # Thử các phương thức predict
-        if hasattr(ngram_model, 'predict_multiple'):
-            print("🔄 Using predict_multiple()...")
-            try:
-                candidates = ngram_model.predict_multiple(input_text, top_k=5)
-                
-                for cand in candidates:
-                    if isinstance(cand, dict):
-                        results.append({
-                            "text": cand.get('text', ''),
-                            "confidence": float(cand.get('confidence', 0.5)),
-                            "method": cand.get('method', 'ngram')
-                        })
-                    else:
-                        results.append({
-                            "text": str(cand),
-                            "confidence": 0.7,
-                            "method": "ngram"
-                        })
-                        
-            except Exception as e:
-                print(f"❌ predict_multiple failed: {e}")
-        
-        if not results and hasattr(ngram_model, 'get_matching_candidates'):
-            print("🔄 Using get_matching_candidates()...")
-            try:
-                candidates = ngram_model.get_matching_candidates(input_text, top_k=5)
-                for cand in candidates:
-                    results.append({
-                        "text": cand.get('text', ''),
-                        "confidence": float(cand.get('confidence', 0.5)),
-                        "method": cand.get('method', 'ngram')
-                    })
-            except Exception as e:
-                print(f"❌ get_matching_candidates failed: {e}")
-        
-        if not results and hasattr(ngram_model, 'predict'):
-            print("🔄 Using predict()...")
-            try:
-                prediction = ngram_model.predict(input_text)
+        try:
+            candidates = active_model.predict_multiple(input_text, top_k=5)
+            
+            for cand in candidates:
                 results.append({
-                    "text": prediction,
-                    "confidence": 0.8,
-                    "method": "ngram"
+                    "text": cand.get('text', ''),
+                    "confidence": float(cand.get('confidence', 0.5)),
+                    "method": cand.get('model', model_type),
+                    "sources": cand.get('sources', [model_type])
                 })
-            except Exception as e:
-                print(f"❌ predict failed: {e}")
-        
-        # Manual prediction từ counts
-        if not results and hasattr(ngram_model, 'counts') and hasattr(ngram_model, 'n'):
-            print("🔄 Manual prediction from counts...")
-            try:
-                words = input_text.split()
-                
-                for k in range(min(ngram_model.n, len(words) + 1), 0, -1):
-                    if len(words) >= k - 1:
-                        context = tuple(words[-(k - 1):]) if k > 1 else ()
-                        
-                        if k in ngram_model.counts and context in ngram_model.counts[k]:
-                            counter = ngram_model.counts[k][context]
-                            top_words = counter.most_common(3)
-                            
-                            for word, count in top_words:
-                                full_text = input_text + " " + word
-                                confidence = count / sum(counter.values()) if sum(counter.values()) > 0 else 0.5
-                                results.append({
-                                    "text": full_text,
-                                    "confidence": float(confidence),
-                                    "method": f"ngram_order_{k}"
-                                })
-                            break
-            except Exception as e:
-                print(f"❌ Manual prediction failed: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        # Fallback
-        if not results:
-            print("⚠️ No prediction methods worked, using fallback")
+            
+            print(f"✅ Generated {len(results)} predictions")
+            
+        except Exception as e:
+            print(f"❌ Prediction error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Return error response
             results = [{
-                "text": f"{input_text} [Dự đoán từ mô hình N-gram]",
-                "confidence": 0.5,
-                "method": "fallback"
+                "text": f"[Error: {str(e)}]",
+                "confidence": 0.0,
+                "method": "error",
+                "sources": []
             }]
         
-        response_data = {
-            "model": "ngram",
+        # Return top 3
+        response = {
+            "model": model_type,
             "results": results[:3]
         }
         
-        print(f"📤 Sending {len(response_data['results'])} results")
-        for i, result in enumerate(response_data['results']):
-            print(f"   {i+1}. {result['text']} (conf: {result['confidence']:.2f})")
+        print(f"📤 Sending {len(response['results'])} results:")
+        for i, r in enumerate(response['results'], 1):
+            sources = '+'.join(r.get('sources', []))
+            print(f"   {i}. [{r['confidence']:.0%}] {r['text'][:50]}... ({sources})")
         
-        return jsonify(response_data)
+        return jsonify(response)
         
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Server error: {e}")
         import traceback
         traceback.print_exc()
         
         return jsonify({
-            "model": "ngram",
+            "model": model_type or "error",
             "results": [],
-            "error": f"Server error: {str(e)}"
+            "error": str(e)
         }), 500
+
 
 @app.route("/api/health", methods=["GET"])
 def health():
     """Health check endpoint"""
+    
+    status = "healthy" if active_model else "no_model"
+    
     return jsonify({
-        "status": "healthy" if ngram_model else "no_model",
-        "model_loaded": ngram_model is not None,
-        "model_type": str(type(ngram_model)) if ngram_model else None,
-        "endpoints": {
-            "predict": "/api/predict",
-            "health": "/api/health"
-        }
+        "status": status,
+        "model_type": model_type,
+        "models_available": {
+            "retrieval": retrieval_model is not None,
+            "lstm": lstm_predictor is not None,
+            "ensemble": ensemble_model is not None
+        },
+        "active_model": model_type,
+        "ready": active_model is not None
     })
 
+
+@app.route("/api/stats", methods=["GET"])
+def stats():
+    """Model statistics endpoint"""
+    
+    info = {
+        "model_type": model_type,
+        "retrieval": None,
+        "lstm": None
+    }
+    
+    if retrieval_model:
+        vocab_size = 0
+        if hasattr(retrieval_model, 'vectorizer') and hasattr(retrieval_model.vectorizer, 'vocabulary_'):
+            vocab_size = len(retrieval_model.vectorizer.vocabulary_)
+        
+        info["retrieval"] = {
+            "database_size": len(retrieval_model.database),
+            "vocab_size": vocab_size,
+            "trained": getattr(retrieval_model, 'is_trained', False)
+        }
+    
+    if lstm_predictor:
+        info["lstm"] = {
+            "vocab_size": lstm_predictor.vocab.n_words,
+            "device": str(lstm_predictor.device)
+        }
+    
+    return jsonify(info)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
 if __name__ == "__main__":
-    print("=" * 60)
-    print("🌐 N-gram Language Model API - READY")
-    print("=" * 60)
-    print("📌 Available endpoints:")
-    print("   POST /api/predict - Predict text completions")
-    print("   GET  /api/health  - Health check")
-    print("=" * 60)
-    print(f"🔧 Model status: {'✅ LOADED' if ngram_model else '❌ NOT LOADED'}")
-    if ngram_model:
-        print(f"🔧 Source: {model_path_used}")
-    print("=" * 60)
-    print("🚀 Server starting on http://localhost:5000")
-    print("=" * 60)
+    print("\n" + "="*60)
+    print("🌐 CADAO AUTOCOMPLETE API - READY")
+    print("="*60)
+    
+    if active_model:
+        print(f"✅ Active model: {model_type}")
+    else:
+        print(f"❌ No models loaded - API will return errors")
+    
+    print(f"\n📌 Endpoints:")
+    print(f"   POST /api/predict - Get predictions")
+    print(f"   GET  /api/health  - Health check")
+    print(f"   GET  /api/stats   - Model statistics")
+    print("="*60)
+    print(f"🚀 Starting server on http://localhost:5000")
+    print("="*60)
     
     app.run(host="0.0.0.0", port=5000, debug=True)

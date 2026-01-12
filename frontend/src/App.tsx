@@ -1,147 +1,184 @@
-import React, { useState } from 'react'
-import './App.css'
-import PredictionForm from './components/PredictionForm'
-import ResultCard from './components/ResultCard'
-import LoadingSpinner from './components/LoadingSpinner'
-import { getPredictions } from './services/api'
+import React, { useState } from 'react';
+import './App.css';
+import PredictionForm from './components/PredictionForm';
+import ResultCard from './components/ResultCard';
+import LoadingSpinner from './components/LoadingSpinner';
+import { getPredictions } from './services/api';
 
-// Định nghĩa type cho 1 kết quả dự đoán
 export interface PredictionResult {
-  text: string
-  confidence: number
-  [key: string]: any
+  text: string;
+  confidence: number;
+  [key: string]: any;
 }
 
-// Định nghĩa type cho response API
 interface PredictionResponse {
-  results: PredictionResult[]
+  results: PredictionResult[];
 }
 
 const App: React.FC = () => {
-  const [results, setResults] = useState<PredictionResult[]>([])
-  const [loading, setLoading] = useState<boolean>(false)
-  const [error, setError] = useState<string>('')
+  const [results, setResults] = useState<PredictionResult[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string>('');
 
   const handleSubmit = async (inputText: string): Promise<void> => {
     if (!inputText.trim()) {
-      setError('Vui lòng nhập văn bản tiếng Việt')
-      return
+      setError('Please input Vietnamese text');
+      return;
     }
 
-    setLoading(true)
-    setError('')
+    setLoading(true);
+    setError('');
 
     try {
-      const data: PredictionResponse = await getPredictions(inputText)
-      setResults(data.results || [])
+      const data: PredictionResponse = await getPredictions(inputText);
+      setResults(data.results || []);
     } catch (err) {
-      setError('Không thể kết nối đến máy chủ. Vui lòng thử lại sau.')
-      console.error('API Error:', err)
+      setError('Unable to connect to server. Please try again later.');
+      console.error('API Error:', err);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const handleReset = (): void => {
-    setResults([])
-    setError('')
-  }
+    setResults([]);
+    setError('');
+  };
 
   return (
-    <div className="app">
+    <div className="app dark-theme">
       <header className="header">
         <div className="container">
-          <h1>
-            <i className="fas fa-language"></i> N-gram
-          </h1>
-          <p className="subtitle">N-gram (n=4)</p>
-          <p className="description">
-            Demo NLP
-          </p>
+          <div className="header-content">
+            <div className="logo-title">
+              <div className="logo-icon">
+                <i className="fas fa-brain-circuit"></i>
+              </div>
+              <div>
+                <h1>Vietnamese Proverbs & Folk Poetry Prediction System</h1>
+                <p className="subtitle">Language Prediction Interface</p>
+              </div>
+            </div>
+            <p className="project-tagline">
+              An experimental interface for exploring pattern completion in textual data.
+            </p>
+          </div>
         </div>
       </header>
 
       <main className="main-content">
         <div className="container">
-          <div className="demo-section">
-            <div className="model-info">
-              <h2>
-                <i className="fas fa-info-circle"></i> Thông tin mô hình
-              </h2>
-              <p>
-                <strong>Mô hình N-gram (n=4)</strong> 
-              </p>
-              <div className="tech-badge">
-                <span>NLP</span>
-                <span>Thống kê</span>
-                <span>N-gram</span>
-                <span>Tiếng Việt</span>
+          <div className="app-layout">
+            {/* Left Panel: Input & Info */}
+            <div className="left-panel">
+              <div className="info-card">
+                <div className="card-header">
+                  <i className="fas fa-flask"></i>
+                  <h2>Project Overview</h2>
+                </div>
+                <p>
+                  This interface demonstrates a statistical approach to text generation. Input partial text to receive potential continuations based on learned patterns.
+                </p>
+                <div className="feature-tags">
+                  <span className="tag">Pattern Analysis</span>
+                  <span className="tag">Statistical Model</span>
+                  <span className="tag">Text Generation</span>
+                </div>
               </div>
+
+              <PredictionForm
+                onSubmit={handleSubmit}
+                onReset={handleReset}
+                disabled={loading}
+              />
+
+              {error && (
+                <div className="error-message">
+                  <i className="fas fa-exclamation-circle"></i> {error}
+                </div>
+              )}
+
+              {!loading && results.length === 0 && !error && (
+                <div className="empty-state">
+                  <div className="empty-illustration">
+                    <i className="fas fa-stream"></i>
+                  </div>
+                  <h3>No predictions yet</h3>
+                  <p>Enter text above to generate prediction results.</p>
+                </div>
+              )}
             </div>
 
-            <PredictionForm
-              onSubmit={handleSubmit}
-              onReset={handleReset}
-              disabled={loading}
-            />
-
-            {error && (
-              <div className="error-message">
-                <i className="fas fa-exclamation-triangle"></i> {error}
-              </div>
-            )}
-
-            {loading && <LoadingSpinner />}
-
-            {!loading && results.length > 0 && (
-              <div className="results-section">
-                <div className="section-header">
-                  <h2>
-                    <i className="fas fa-list-alt"></i> Result
-                  </h2>
-                  <p className="result-count">
-                    {results.length} Result found
-                  </p>
+            {/* Right Panel: Results */}
+            <div className="right-panel">
+              {loading ? (
+                <div className="loading-container">
+                  <LoadingSpinner />
                 </div>
-                <div className="results-grid">
-                  {results.map((result, index) => (
-                    <ResultCard
-                      key={index}
-                      result={result}
-                      index={index + 1}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
+              ) : results.length > 0 ? (
+                <div className="results-section">
+                  <div className="results-header">
+                    <div>
+                      <h2>
+                        <i className="fas fa-cube"></i>
+                        Predictions
+                      </h2>
+                      <p className="results-count">{results.length} generated</p>
+                    </div>
+                    <div className="results-controls">
+                      <button className="icon-btn" title="Export results">
+                        <i className="fas fa-download"></i>
+                      </button>
+                    </div>
+                  </div>
 
-            {!loading && results.length === 0 && !error && (
-              <div className="empty-state">
-                <i className="fas fa-comment-dots"></i>
-                <h3>Chưa có kết quả</h3>
-              </div>
-            )}
+                  <div className="results-container">
+                    {results.map((result, index) => (
+                      <ResultCard
+                        key={index}
+                        result={result}
+                        index={index + 1}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="placeholder-section">
+                  <div className="placeholder-content">
+                    <i className="fas fa-project-diagram"></i>
+                    <h3>Output Panel</h3>
+                    <p>Generated predictions will appear here in a structured card format.</p>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </main>
 
       <footer className="footer">
         <div className="container">
-          <p> NLP - Mô hình N-gram &copy; {new Date().getFullYear()}</p>
-          <p className="github-link">
-            <i className="fab fa-github"></i>
-            <a
-              href="https://github.com/imninh/Cadao-Tucngu-NLP.git"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              GitHub
-            </a>
-          </p>
+          <div className="footer-content">
+            <div className="footer-left">
+              <p>Language Processing Project • Academic Demo</p>
+            </div>
+            <div className="footer-right">
+              <a
+                href="https://github.com/imninh/Cadao-Tucngu-NLP.git"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="github-link"
+              >
+                <i className="fab fa-github"></i>
+                <span>View Source</span>
+              </a>
+              <p className="copyright">© {new Date().getFullYear()} Research Group</p>
+            </div>
+          </div>
         </div>
       </footer>
     </div>
-  )
-}
+  );
+};
 
-export default App
+export default App;

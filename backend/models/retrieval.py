@@ -1,5 +1,6 @@
+# Improved retrieval.py with BM25 instead of TF-IDF cosine, and prefix matching boost
+
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import json
 import pickle
@@ -8,55 +9,62 @@ from pathlib import Path
 
 class RetrievalModel:
     """
-    Retrieval-based model sử dụng TF-IDF + Cosine Similarity
+    Improved Retrieval-based model using BM25 scoring with prefix matching boost
     
-    Cách hoạt động:
-    1. Vectorize tất cả câu trong dataset thành TF-IDF vectors
-    2. Khi có input, vectorize input
-    3. Tính cosine similarity giữa input và tất cả câu
-    4. Trả về top-k câu có similarity cao nhất
+    Improvements:
+    - Replaced TF-IDF cosine similarity with BM25 ranking (better for IR tasks)
+    - Added prefix matching: if the sentence starts with the query (word-level), boost score significantly
+    - Used char_wb analyzer for better handling of Vietnamese compound words
+    - Adjusted ngram_range to (2,4) for balanced lexical matching
+    - Better confidence scaling
+    - Fallback to random only if no matches above threshold
     
-    Ưu điểm:
-    - Luôn trả về câu hoàn chỉnh (không generate)
-    - Xử lý tốt input mơ hồ
-    - Nhanh (vectorize 1 lần, inference nhanh)
+    BM25 advantages over TF-IDF cosine:
+    - Handles document length normalization better
+    - Saturates TF (term frequency) to prevent long docs dominating
+    - Proven better for text retrieval tasks
     
-    Nhược điểm:
-    - Không tạo câu mới (chỉ retrieve)
-    - Phụ thuộc vào dataset có đủ đa dạng
+    Prefix boost: For partial completion tasks, exact prefix matches get +10 to score
     """
     
-    def __init__(self, ngram_range=(1, 3), max_features=5000):
+    def __init__(self, analyzer='char_wb', ngram_range=(2, 4), max_features=10000, bm25_k1=1.5, bm25_b=0.75):
         """
         Args:
-            ngram_range: (min, max) n-grams để extract
-                        (1,3) = unigrams + bigrams + trigrams
-            max_features: Số features tối đa cho TF-IDF
+            analyzer: 'char_wb' for character n-grams within words (good for Vietnamese)
+            ngram_range: Character n-grams range
+            max_features: Max vocabulary size
+            bm25_k1: BM25 TF saturation parameter (1.2-2.0 typical)
+            bm25_b: BM25 length normalization (0.75 typical)
         """
         self.vectorizer = TfidfVectorizer(
+            analyzer=analyzer,
             ngram_range=ngram_range,
             max_features=max_features,
             lowercase=True,
-            strip_accents=None,  # Giữ nguyên dấu tiếng Việt
-            token_pattern=r'\b\w+\b'
+            strip_accents=None,  # Keep Vietnamese accents
         )
         
         self.database = []  # List of full sentences
-        self.vectors = None  # TF-IDF matrix
+        self.term_freqs = None  # Document-term matrix (counts)
+        self.idf = None  # IDF values
+        self.doc_lengths = None  # Length of each doc in words
+        self.avg_doc_len = 0
+        self.bm25_k1 = bm25_k1
+        self.bm25_b = bm25_b
         self.is_trained = False
     
     def train(self, train_data):
         """
-        Huấn luyện model = Xây dựng database + vectorize
+        Train model: Build database and compute necessary statistics for BM25
         
         Args:
             train_data: List of dicts [{'full': '...', ...}]
         """
         print(f"\n{'─'*60}")
-        print(f"🔄 TRAINING RETRIEVAL MODEL")
+        print(f"🔄 TRAINING IMPROVED RETRIEVAL MODEL (BM25)")
         print(f"{'─'*60}")
         
-        # Lấy unique sentences
+        # Get unique sentences
         seen = set()
         for item in train_data:
             sentence = item['full']
@@ -66,95 +74,143 @@ class RetrievalModel:
         
         print(f"📊 Database: {len(self.database)} unique sentences")
         
-        # Vectorize tất cả câu
-        print(f"🔄 Vectorizing with TF-IDF...")
-        self.vectors = self.vectorizer.fit_transform(self.database)
+        # Vectorize to get term frequencies (use CountVectorizer internally)
+        from sklearn.feature_extraction.text import CountVectorizer
+        count_vec = CountVectorizer(
+            analyzer=self.vectorizer.analyzer,
+            ngram_range=self.vectorizer.ngram_range,
+            max_features=self.vectorizer.max_features,
+            lowercase=True,
+            strip_accents=None,
+        )
+        self.term_freqs = count_vec.fit_transform(self.database)
         
-        print(f"✓ Vector shape: {self.vectors.shape}")
-        print(f"✓ Vocabulary size: {len(self.vectorizer.vocabulary_):,}")
+        # Compute IDF from TF-IDF vectorizer
+        self.idf = self.vectorizer.fit(self.database).idf_
         
-        # Phân tích top features
-        feature_names = self.vectorizer.get_feature_names_out()
-        print(f"\n📝 Top 10 features (từ quan trọng nhất):")
+        # Compute document lengths (number of terms)
+        self.doc_lengths = np.array([len(doc.split()) for doc in self.database])
+        self.avg_doc_len = np.mean(self.doc_lengths) if len(self.doc_lengths) > 0 else 0
         
-        # Tính IDF scores
-        idf_scores = self.vectorizer.idf_
-        top_indices = np.argsort(idf_scores)[:10]  # IDF thấp = xuất hiện nhiều
+        print(f"✓ Term matrix shape: {self.term_freqs.shape}")
+        print(f"✓ Vocabulary size: {len(count_vec.vocabulary_):,}")
+        print(f"✓ Average doc length: {self.avg_doc_len:.1f} words")
         
+        # Top features analysis
+        feature_names = count_vec.get_feature_names_out()
+        print(f"\n📝 Top 10 features:")
+        top_indices = np.argsort(self.idf)[:10]  # Low IDF = common
         for i, idx in enumerate(top_indices, 1):
-            print(f"   {i:2d}. '{feature_names[idx]}' (IDF: {idf_scores[idx]:.2f})")
+            print(f"   {i:2d}. '{feature_names[idx]}' (IDF: {self.idf[idx]:.2f})")
         
         self.is_trained = True
     
+    def compute_bm25_scores(self, query):
+        """
+        Compute BM25 scores for all documents given a query
+        
+        BM25 formula:
+        score(d, q) = sum_{t in q} IDF(t) * (TF(t,d) * (k1 + 1)) / (TF(t,d) + k1 * (1 - b + b * len(d)/avg_len))
+        """
+        if not self.is_trained:
+            raise ValueError("Model not trained!")
+        
+        # Get query terms
+        query_terms = self.vectorizer.transform([query])  # But we need counts
+        from sklearn.feature_extraction.text import CountVectorizer
+        count_vec = CountVectorizer(vocabulary=self.vectorizer.vocabulary_)
+        query_tf = count_vec.fit_transform([query]).toarray()[0]
+        
+        scores = np.zeros(len(self.database))
+        
+        for term_idx in np.nonzero(query_tf)[0]:
+            tf_query = query_tf[term_idx]
+            if tf_query == 0:
+                continue
+            
+            # TF in docs for this term
+            tf_docs = self.term_freqs[:, term_idx].toarray().flatten()
+            
+            # IDF for term
+            idf_term = self.idf[term_idx]
+            
+            # BM25 term score
+            numerator = tf_docs * (self.bm25_k1 + 1)
+            denominator = tf_docs + self.bm25_k1 * (1 - self.bm25_b + self.bm25_b * (self.doc_lengths / self.avg_doc_len))
+            term_scores = idf_term * (numerator / denominator)
+            
+            scores += term_scores
+        
+        return scores
+    
     def retrieve(self, query, top_k=10):
         """
-        Tìm top-k câu giống nhất
+        Retrieve top-k similar sentences using BM25 with prefix boost
         
         Args:
             query: Input string
-            top_k: Số câu trả về
+            top_k: Number to return
         
         Returns:
-            List of (sentence, similarity_score) tuples
+            List of (sentence, score) tuples
         """
-        if not self.is_trained:
-            raise ValueError("Model chưa được train!")
+        # Compute BM25 scores
+        scores = self.compute_bm25_scores(query.lower())
         
-        # Vectorize query
-        query_vec = self.vectorizer.transform([query.lower()])
+        # Add prefix matching boost
+        query_words = query.lower().split()
+        query_len = len(query_words)
         
-        # Tính similarity với tất cả câu
-        similarities = cosine_similarity(query_vec, self.vectors)[0]
+        for i, sentence in enumerate(self.database):
+            sent_words = sentence.lower().split()
+            if sent_words[:query_len] == query_words:
+                scores[i] += 10.0  # Strong boost for exact prefix match
         
-        # Lấy top-k indices
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
+        # Get top-k
+        top_indices = np.argsort(scores)[-top_k:][::-1]
         
-        # Trả về (sentence, score)
         results = []
         for idx in top_indices:
-            if similarities[idx] > 0:  # Chỉ lấy nếu có similarity > 0
-                results.append((self.database[idx], float(similarities[idx])))
+            if scores[idx] > 0:
+                results.append((self.database[idx], float(scores[idx])))
         
         return results
     
-    def predict_multiple(self, partial_input, top_k=3, min_similarity=0.05):
+    def predict_multiple(self, partial_input, top_k=3, min_score=0.1):
         """
-        Trả về top-k candidates cho API
+        Return top-k candidates for API
         
         Args:
             partial_input: Input string
-            top_k: Số candidates
-            min_similarity: Ngưỡng similarity tối thiểu
+            top_k: Number of candidates
+            min_score: Minimum score threshold
         
         Returns:
             List of dicts [{'text': '...', 'confidence': 0.9, 'model': 'retrieval'}]
         """
-        # Retrieve top candidates
-        retrieved = self.retrieve(partial_input, top_k=top_k*2)  # Lấy nhiều hơn để filter
+        retrieved = self.retrieve(partial_input, top_k=top_k*2)
         
         candidates = []
+        max_score = max([s[1] for s in retrieved]) if retrieved else 1.0
         
-        for sentence, similarity in retrieved:
-            # Filter theo threshold
-            if similarity < min_similarity:
+        for sentence, score in retrieved:
+            if score < min_score:
                 continue
             
-            # Map similarity → confidence (0-1)
-            # Similarity thường trong khoảng 0.1-0.8
-            # Scale lên để confidence rõ ràng hơn
-            confidence = min(0.99, similarity * 1.2)
+            # Normalize score to confidence (0-1)
+            confidence = min(0.99, score / max_score) if max_score > 0 else 0.05
             
             candidates.append({
                 'text': sentence,
                 'confidence': round(confidence, 3),
                 'model': 'retrieval',
-                'similarity': round(similarity, 3)
+                'score': round(score, 3)
             })
             
             if len(candidates) >= top_k:
                 break
         
-        # Fallback nếu không tìm thấy gì
+        # Fallback if no good matches
         if not candidates:
             import random
             random_sentence = random.choice(self.database) if self.database else partial_input
@@ -162,78 +218,77 @@ class RetrievalModel:
                 'text': random_sentence,
                 'confidence': 0.05,
                 'model': 'retrieval',
-                'similarity': 0.0,
+                'score': 0.0,
                 'method': 'fallback'
             }]
         
         return candidates
     
     def predict(self, partial_input):
-        """
-        Trả về 1 kết quả tốt nhất (wrapper)
-        """
+        """Return single best result"""
         candidates = self.predict_multiple(partial_input, top_k=1)
         return candidates[0]['text'] if candidates else partial_input
     
     def evaluate(self, test_data):
         """
-        Đánh giá model trên test set
+        Evaluate on test set
         
         Metrics:
         - Exact match accuracy
-        - Top-3 accuracy (câu đúng có trong top 3 không)
-        - Average similarity score
+        - Top-3 accuracy
+        - Average score
         """
         print(f"\n{'─'*60}")
-        print(f"📊 EVALUATING RETRIEVAL MODEL")
+        print(f"📊 EVALUATING IMPROVED RETRIEVAL MODEL")
         print(f"{'─'*60}")
         
         exact_correct = 0
         top3_correct = 0
         total = len(test_data)
-        similarities = []
+        scores = []
         
         for item in test_data:
-            # Predict
             candidates = self.predict_multiple(item['input'], top_k=3)
             
-            # Check exact match
             if candidates[0]['text'] == item['full']:
                 exact_correct += 1
             
-            # Check top-3
             top3_texts = [c['text'] for c in candidates]
             if item['full'] in top3_texts:
                 top3_correct += 1
             
-            # Similarity score
             if candidates:
-                similarities.append(candidates[0]['similarity'])
+                scores.append(candidates[0]['score'])
         
         exact_acc = exact_correct / total if total > 0 else 0
         top3_acc = top3_correct / total if total > 0 else 0
-        avg_sim = sum(similarities) / len(similarities) if similarities else 0
+        avg_score = sum(scores) / len(scores) if scores else 0
         
         print(f"Test samples: {total}")
         print(f"Exact matches: {exact_correct} ({exact_acc:.1%})")
         print(f"Top-3 matches: {top3_correct} ({top3_acc:.1%})")
-        print(f"Avg similarity: {avg_sim:.3f}")
+        print(f"Avg score: {avg_score:.3f}")
         
         return {
             'exact_accuracy': exact_acc,
             'top3_accuracy': top3_acc,
-            'avg_similarity': avg_sim,
+            'avg_score': avg_score,
             'exact_correct': exact_correct,
             'top3_correct': top3_correct,
             'total': total
         }
     
     def save(self, file_path):
-        """Lưu model"""
+        """Save model"""
         data = {
             'vectorizer': self.vectorizer,
             'database': self.database,
-            'vectors': self.vectors
+            'term_freqs': self.term_freqs,
+            'idf': self.idf,
+            'doc_lengths': self.doc_lengths,
+            'avg_doc_len': self.avg_doc_len,
+            'bm25_k1': self.bm25_k1,
+            'bm25_b': self.bm25_b
         }
         
         with open(file_path, 'wb') as f:
@@ -248,7 +303,12 @@ class RetrievalModel:
         
         self.vectorizer = data['vectorizer']
         self.database = data['database']
-        self.vectors = data['vectors']
+        self.term_freqs = data['term_freqs']
+        self.idf = data['idf']
+        self.doc_lengths = data['doc_lengths']
+        self.avg_doc_len = data['avg_doc_len']
+        self.bm25_k1 = data['bm25_k1']
+        self.bm25_b = data['bm25_b']
         self.is_trained = True
         
         print(f"✓ Model loaded from {file_path}")
@@ -256,13 +316,13 @@ class RetrievalModel:
 
 # ========== SCRIPT TRAINING ==========
 def train_retrieval_model():
-    """Script để train và test model"""
+    """Script to train and test model"""
     
     print("\n" + "="*70)
-    print("🚀 RETRIEVAL MODEL TRAINING")
+    print("🚀 IMPROVED RETRIEVAL MODEL TRAINING")
     print("="*70)
     
-    # Đường dẫn
+    # Paths
     BASE_DIR = Path(__file__).parent.parent
     DATA_DIR = BASE_DIR / "data" / "processed"
     MODEL_DIR = BASE_DIR / "trained_models"
@@ -282,7 +342,7 @@ def train_retrieval_model():
     print(f"✓ Test:  {len(test_data)} samples")
     
     # Train model
-    model = RetrievalModel(ngram_range=(1, 3), max_features=5000)
+    model = RetrievalModel(analyzer='char_wb', ngram_range=(2, 4), max_features=10000)
     model.train(train_data)
     
     # Test predictions
@@ -306,13 +366,13 @@ def train_retrieval_model():
         
         for i, cand in enumerate(candidates, 1):
             print(f"   {i}. {cand['text']}")
-            print(f"      📊 Confidence: {cand['confidence']:.1%} | Similarity: {cand['similarity']:.3f}")
+            print(f"      📊 Confidence: {cand['confidence']:.1%} | Score: {cand['score']:.3f}")
     
     # Evaluate
     metrics = model.evaluate(test_data[:100])
     
     # Save model
-    model_path = MODEL_DIR / "retrieval_model.pkl"
+    model_path = MODEL_DIR / "improved_retrieval_model.pkl"
     model.save(model_path)
     
     print(f"\n{'='*70}")
@@ -320,10 +380,10 @@ def train_retrieval_model():
     print("="*70)
     print(f"\n📊 Summary:")
     print(f"   • Database size: {len(model.database):,} sentences")
-    print(f"   • Vector dimension: {model.vectors.shape[1]:,}")
+    print(f"   • Vector dimension: {model.term_freqs.shape[1]:,}")
     print(f"   • Exact accuracy: {metrics['exact_accuracy']:.1%}")
     print(f"   • Top-3 accuracy: {metrics['top3_accuracy']:.1%}")
-    print(f"   • Avg similarity: {metrics['avg_similarity']:.3f}")
+    print(f"   • Avg score: {metrics['avg_score']:.3f}")
     print(f"   • Model saved: {model_path}")
     print()
 
